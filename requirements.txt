@@ -1,1 +1,5 @@
 requests>=2.31
+# numpy: Stage 3's Monte Carlo engine draws num_simulations x num_unique_players
+# random numbers and reranks the whole league every simulation; vectorising that
+# is what keeps 50,000 simulations under a second. See README "Stage 3" section.
+numpy>=1.26
