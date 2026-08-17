@@ -1,4 +1,4 @@
-# FPL Rival - Stage 1 Prototype
+# FPL Rival - Stages 1 & 2
 
 A small local CLI that proves out retrieval and structuring of **public**
 Fantasy Premier League (FPL) data for a manager and one of their classic
@@ -86,3 +86,116 @@ played, the same code paths populate normally.
 - Every failed or missing API call is recorded in `data_gaps` in
   `summary.json` and echoed in the final report, instead of being
   swallowed silently.
+
+---
+
+# Stage 2 - Rival Intelligence Engine
+
+Stage 2 adds a **deterministic analytics engine** on top of Stage 1's data
+retrieval. It does not touch any Stage 1 file. The goal: build the
+analytical foundations for eventually optimising *probability of winning
+the mini league*, not just raw expected points - but Stage 2 itself makes
+no recommendations. No LLM, no website, no auth, no database.
+
+## Architecture
+
+Three layers, each independently testable:
+
+```
+fpl_rival/api.py, league.py, manager.py     Stage 1 retrieval (unchanged)
+fpl_rival/intelligence/collect.py            Stage 2 retrieval: adds full
+                                              picks-history fetch, reuses
+                                              Stage 1's league/standings code
+fpl_rival/intelligence/models.py             Shared data model (ManagerData,
+                                              LeagueData, GameContext) - the
+                                              only thing the engine sees
+fpl_rival/intelligence/{profiles,rival_analysis,
+  classification,consensus,relevance,
+  threats,strategy,preseason}.py             Pure analytics - no network,
+                                              no I/O, fully unit-testable
+fpl_rival/intelligence/engine.py             Orchestrates the above into one report
+fpl_rival/intelligence/report_text.py        Presentation - formats the report as text
+fpl_rival/fixtures/synthetic.py              Synthetic test data ONLY - never
+                                              mixed with live data (is_synthetic
+                                              flag, entry IDs >= 900000)
+intelligence_cli.py                          Single-command launcher
+tests/                                        51 unittest cases, all synthetic
+```
+
+The engine (`fpl_rival.intelligence.engine.run`) takes a `LeagueData` +
+`GameContext` and returns a report dict - it never calls the network, so it
+runs identically whether that data came from a live FPL run or a test
+fixture.
+
+## Run it
+
+```bash
+python3 intelligence_cli.py                        # live, interactive league pick
+python3 intelligence_cli.py --league-id 1132827     # live, specific league
+python3 intelligence_cli.py --fixture scenario_a    # synthetic demo, zero network calls
+python3 intelligence_cli.py --fixture scenario_a --json  # + full JSON report
+```
+
+Available `--fixture` names: `scenario_a` (DEFEND), `scenario_b` (ATTACK),
+`scenario_c` (DESPERATE), `scenario_d` (near-identical squads),
+`scenario_e` (threat detection), `preseason`.
+
+## Run the tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+No `pytest`, no other test framework - stdlib `unittest` only, per the "no
+unnecessary frameworks" brief. No test touches the network.
+
+## What each section computes
+
+1. **Manager profiles** (`profiles.py`) - position, rank, points, squad/XI/
+   bench, captain/vice, chips used **and remaining** (derived from FPL's own
+   per-half chip windows in bootstrap-static), transfers/gw, hits, average
+   transfers/gw, captain history/concentration/unique count, formation
+   history, bench points (sourced from gameweek history, not picks - so it
+   works even with only the latest gameweek's picks), transfer timing
+   (median hours before deadline), team value.
+2. **Chris vs. rival** (`rival_analysis.py`) - squad overlap (15-man and
+   XI separately), differentials both directions, captain overlap % across
+   however many comparable gameweeks exist, and an explicit "effective
+   exposure" blend (`0.7 * squad_overlap_fraction + 0.3 *
+   captain_overlap_fraction`, weights configurable) - documented as a
+   simple linear model, not a fitted one.
+3. **Behavioural classification** (`classification.py`) - transfer
+   behaviour (5 configurable bands) and risk behaviour (a transparent,
+   weighted blend of hits/differential-ownership/captain-variety/transfer-
+   frequency/squad-deviation, every component exposed). Both return
+   `"Insufficient data"` below `min_gameweeks_for_classification`.
+4. **League consensus** (`consensus.py`) - player/captain ownership %,
+   most common players/captain, most template/differentiated managers
+   (by average pairwise squad overlap), unique-to-one-manager players.
+5. **Threat analysis** (`threats.py`) - shields (Chris owns, heavily owned
+   around/above him), threats (heavily owned/captained by relevant rivals,
+   Chris lacks), weapons (Chris owns, lightly owned by relevant rivals).
+   Explicitly not a claim about player quality - relative exposure only.
+6. **Relevant rivals** (`relevance.py`) - a points-gap-and-position score
+   (`1 - (gap_weight * normalized_gap + position_weight *
+   normalized_position)`), not a hardcoded "top 5"; immediate table
+   neighbours are always included regardless of score. All weights/
+   thresholds/caps live in `EngineConfig`.
+7. **Strategy state** (`strategy.py`) - DEFEND / BALANCED / ATTACK /
+   DESPERATE, or `INSUFFICIENT_SEASON_DATA` before GW1 is scored. Does not
+   drive any recommendation. See `strategy.py`'s docstring for the exact
+   decision tree and thresholds.
+8. **Pre-season handling** (`preseason.py`) - when no gameweek is
+   complete, the engine returns membership, competitor count, whatever
+   public info exists (e.g. career season history), what activates after
+   GW1, and which calculations are currently blocked and why. No dummy
+   numbers.
+
+## Synthetic fixtures vs. live data
+
+`fpl_rival/fixtures/synthetic.py` is used **only** by tests and by
+`--fixture` demos. Every synthetic `LeagueData`/`ManagerData` is stamped
+`is_synthetic=True` and uses entry/league IDs >= 900000, and
+`report_text.py` prints a loud `*** SYNTHETIC TEST DATA ***` banner
+whenever `is_synthetic` is set - so it can never be mistaken for a real
+run, on screen or in the saved JSON.
