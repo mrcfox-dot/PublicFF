@@ -1,4 +1,4 @@
-# FPL Rival - Stages 1, 2, 3 & 4
+# FPL Rival - Stages 1, 2, 3, 4 & 4.5
 
 A small local CLI that proves out retrieval and structuring of **public**
 Fantasy Premier League (FPL) data for a manager and one of their classic
@@ -463,5 +463,114 @@ pattern `fpl_rival/simulation/relevance_adapter.py` already uses for Stage 2.
   transfer-in captaincy risk is modelled (out of scope per the brief).
 
 See the Stage 4 completion report (delivered in-conversation) for the
-persona/acceptance test results, backtesting details, and Stage 5
-recommendation.
+persona/acceptance test results and backtesting details.
+
+---
+
+# Stage 4.5 - Historical Calibration
+
+Stage 4.5 answers one question: does Stage 4's manually-weighted rival
+captain model actually predict real manager behaviour better than simple
+baselines? It adds dataset ingestion, no-leakage backtesting against
+baselines, chronological train/validation/test splitting, coordinate-search
+parameter fitting, ablation, history-depth analysis, a manager
+predictability score, and calibration measurement (with an optional
+temperature-scaling correction) - all reusing Stage 4's prediction engine
+and leakage boundary unmodified.
+
+**No real historical FPL manager dataset was available in this
+environment.** Every number this stage produces without `--dataset` is
+from a synthetic dataset (Stage 4's own behavioural personas, run through
+the real CSV importer) and is clearly labelled as such wherever it's
+printed - see the Stage 4.5 completion report for exactly what real data
+would be needed and why this is an honest "Outcome C" for the real-world
+question, even though the infrastructure itself is fully validated.
+
+## Run it
+
+```bash
+python3 calibration_cli.py                              # synthetic dataset, no --fit
+python3 calibration_cli.py --fit                         # + coordinate-search parameter fitting
+python3 calibration_cli.py --dataset /path/to/data.csv --fit
+python3 calibration_cli.py --dataset /path/to/dir --long-format --fit
+```
+
+`--dataset` must be a local file or directory already on disk - nothing is
+ever downloaded or scraped. See `fpl_rival/calibration/importer.py` for
+the native CSV/JSONL schema and an example adaptor for a differently-shaped
+raw export.
+
+## Run the tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+83 new Stage 4.5 test cases (294 total across all stages), no network
+access anywhere.
+
+## Architecture
+
+```
+fpl_rival/calibration/
+  models.py              HistoricalRecord (the dataset interface), DatasetSplit (season+gameweek chronology)
+  importer.py             local file/dir CSV+JSONL import, one example adaptor, dataset summary
+  baselines.py             Last Captain / Personal Frequency / Consensus / EP-Favourite / Uniform
+  harness.py                runs the Stage 4 model OR a baseline over a whole dataset, phase-tagged
+  splits.py                  chronological train/validation/test boundary construction
+  fitting.py                  coordinate-search parameter fitting, minimizing validation log loss
+  ablation.py                  single-feature-family zeroing, measured on validation
+  history_depth.py              buckets predictions by gameweeks_observed
+  predictability.py              evidence-based manager predictability score (from backtest accuracy, not Stage 2 reuse)
+  calibration_report.py           ECE + optional temperature-scaling correction (fit on validation, reused on test)
+  stage3_impact.py                 manual vs fitted config fed into Stage 3 Captain Battle, same scenarios
+fpl_rival/fixtures/calibration_fixtures.py   synthetic dataset generator (deterministic - see note below)
+calibration_cli.py                            single-command launcher
+```
+
+## Key design point: one leakage boundary, reused everywhere
+
+`harness.py` never re-implements "what counts as the past" - it calls
+Stage 4's `LeagueHistory.before(target_gameweek)` for baselines exactly the
+way `predict_captain` already uses it internally for the model. Backtest
+replay, parameter fitting, and ablation all go through this same harness,
+so there is exactly one leakage boundary in the whole system, tested
+directly with deliberate leak-attempt cases (see
+`tests/test_calibration_harness.py`).
+
+## A bug this stage's own tests caught
+
+An earlier version of the synthetic dataset generator seeded each
+persona's random history with Python's built-in `hash()` on a
+`(name, index)` tuple. `hash()` on strings is randomized per process
+(`PYTHONHASHSEED`) unless explicitly disabled, so two runs of the CLI
+silently produced two *different* synthetic datasets and therefore
+different, non-reproducible numbers - caught by re-running the CLI twice
+and diffing the output, then locked down with
+`tests/test_calibration_dataset_export.py`, which runs the generator in
+separate subprocesses and asserts identical results. Fixed by deriving
+seeds from a plain integer formula instead of `hash()`. Left in this
+README as a reminder that "looks deterministic" and "is deterministic"
+are different claims worth actually testing.
+
+## Known limitations (explicit, not hidden)
+
+* No real historical dataset was available to validate against - every
+  synthetic-data result is infrastructure validation, not evidence about
+  real manager behaviour.
+* Personal history does not carry across season boundaries in the harness
+  (gameweek numbers reset each season) - a documented simplification, not
+  a claim that real rival loyalty resets every season.
+* Manager predictability's three weights (concentration / prediction
+  confidence / backtest accuracy) are equal by default, not fitted -
+  reasonable, not derived from data.
+* Baseline D (expected-points favourite) and the EP feature/weight are
+  only exercised when EP data is supplied - real datasets very likely
+  won't have historical pre-deadline EP data, and this stage does not
+  fabricate any.
+* Ablation and parameter fitting both run on the validation split only,
+  by design - test-split numbers are reported exactly once, after every
+  choice is already locked in.
+
+See the Stage 4.5 completion report (delivered in-conversation) for the
+full results table, ablation findings, and recommendation.
