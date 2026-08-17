@@ -1,4 +1,4 @@
-# FPL Rival - Stages 1, 2 & 3
+# FPL Rival - Stages 1, 2, 3 & 4
 
 A small local CLI that proves out retrieval and structuring of **public**
 Fantasy Premier League (FPL) data for a manager and one of their classic
@@ -331,5 +331,137 @@ predictions):
 * No injury/news modelling, no validated commercial projection feed.
 
 See the Stage 3 completion report (delivered in-conversation) for the
-acceptance test results, performance benchmark, and Stage 4
+acceptance test results and performance benchmark.
+
+---
+
+# Stage 4 - Rival Prediction Engine
+
+Stage 4 estimates "P(rival captains player X)" from a rival's historical
+captaincy decisions, as an explicit, fully-explained probability
+distribution - never an unexplained number. It feeds directly into Stage
+3's probabilistic rival-captain mode via a thin adapter. No LLM, no
+website, no live gameweek data yet - every scenario runs on synthetic,
+clearly-labelled fixtures.
+
+## Run it
+
+```bash
+python3 prediction_cli.py --fixture template
+python3 prediction_cli.py --fixture loyal
+python3 prediction_cli.py --fixture differential
+python3 prediction_cli.py --fixture ep-follower
+python3 prediction_cli.py --fixture erratic
+python3 prediction_cli.py --fixture pipeline-loyal      # full Stage4 -> Stage3 pipeline
+python3 prediction_cli.py --fixture pipeline-balanced   # same, Dave's history changed - strategy can flip
+```
+
+## Run the tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+94 new Stage 4 test cases (211 total across all four stages), no network
+access anywhere.
+
+## Architecture
+
+```
+fpl_rival/prediction/
+  models.py            CaptainObservation, LeagueHistory (the ONE leakage boundary), PredictionConfig
+  exceptions.py         EmptyCandidateSetError, InvalidExternalInputError
+  features.py            personal loyalty, recency-weighted rate, concentration, league consensus, historical EP-response
+  captain_model.py       additive weighted score -> softmax; shrinkage toward the prior; data-sufficiency classification
+  prediction_engine.py    orchestrates features + model; candidates restricted to owned players
+  backtest.py             chronological replay, reuses the same leakage boundary as live prediction
+  history_store.py        JSONL prediction log + actual-outcome recording (no database)
+  evaluation.py            top-1/top-2 accuracy, log loss, Brier score
+  calibration.py           probability-bucket reliability reporting
+  stage3_adapter.py        the one seam to Stage 3 - turns a prediction into ManagerState.captain_probabilities
+  report_text.py           presentation only - deterministic templates, no LLM prose
+fpl_rival/fixtures/prediction_fixtures.py   5 personas + end-to-end pipeline scenario (entry IDs/config synthetic, reuses Stage 3's player-id pool)
+prediction_cli.py                            single-command launcher
+```
+
+## Methodology
+
+```
+captain_score(candidate) =
+      shrinkage_weight * [ w_personal * personal_loyalty_rate
+                          + w_recency  * recency_weighted_rate
+                          + w_concentration * concentration_share ]
+    +                     [ w_consensus * league_consensus_rate
+                          + w_global_consensus * global_consensus_value   (optional input)
+                          + w_expected_points   * expected_points_value   (optional input) ]
+
+probabilities = softmax(score / temperature)
+```
+
+**Shrinkage toward the prior (brief item 5):** `shrinkage_weight = n / (n + k)`,
+where `n` is the number of personal captaincy decisions observed and `k`
+(`personal_shrinkage_k`, default 6) is configurable. This is 0 with zero
+personal history (pure prior - consensus/EP only), 0.5 at `n = k`, and
+approaches 1 as history accumulates - a smooth curve, never a hard
+gameweek-based switch. The prior components (consensus, global consensus,
+expected points) always contribute at full weight; only the
+personal-behaviour components are scaled by this weight, which is what
+makes "manager-specific signal progressively matters more" literally true
+without ever disabling the prior.
+
+**Data sufficiency states** (`PRIOR_DRIVEN` / `MIXED` / `BEHAVIOUR_DRIVEN`)
+are quantitative thresholds on `shrinkage_weight`, all configurable in
+`PredictionConfig`. A separate `LOW PERSONAL DATA` flag fires below a
+configurable gameweek count, independent of the state classification.
+
+**Every prediction exposes:** the full candidate probability distribution,
+each candidate's raw feature values, each component's weighted
+contribution to the score, and the data-sufficiency block above - nothing
+is an opaque number.
+
+## The critical mechanism: one leakage boundary
+
+`LeagueHistory.before(target_gameweek)` is called exactly once, at the top
+of `prediction_engine.predict_captain`, before any feature is computed.
+Backtesting reuses this identical function rather than re-implementing its
+own slicing - there is only one place in the whole system that decides
+"what counts as the past", and it is tested directly (see
+`tests/test_prediction_engine.py`'s defensive leakage test, which feeds a
+history containing gameweeks at/after the target and confirms they're
+ignored).
+
+## Stage 3 integration
+
+```python
+prediction = predict_captain(rival.entry_id, rival.name, rival.starting_xi, target_gw, history, config, expected_points=ep)
+rival_updated = stage3_adapter.apply_prediction_to_manager_state(rival, prediction)
+# rival_updated.captain_probabilities is now ready for Stage 3's
+# SimulationConfig(rival_captain_mode="probabilistic") - no Stage 3 file changes.
+```
+
+The adapter reuses Stage 3's own `rival_behaviour.validate_captain_distribution`
+to confirm the output is immediately usable, the same reuse-without-coupling
+pattern `fpl_rival/simulation/relevance_adapter.py` already uses for Stage 2.
+
+## Known limitations (explicit, not hidden)
+
+* "League consensus" is a track-record proxy (other managers' own past
+  captaincy), not a live snapshot of this week's picks - genuinely
+  unavailable before the deadline (see Stage 1's documented data
+  boundaries), and clearly labelled as such in the code.
+* "Historical response to expected points" (follows-highest-projected /
+  differential rate) is computed and exposed for transparency, but not yet
+  fed back into the scoring model - a deliberate Stage 4 scope boundary,
+  not an oversight.
+* All component weights, the shrinkage constant, the recency decay rate,
+  and the data-sufficiency thresholds are manually configured defaults,
+  not fitted to any real data - there is no real captaincy dataset yet to
+  fit them against.
+* Global consensus and expected-points inputs are optional, synthetic/
+  manually-supplied interfaces - no live source is wired up.
+* Candidates are restricted to the rival's currently-owned squad, so no
+  transfer-in captaincy risk is modelled (out of scope per the brief).
+
+See the Stage 4 completion report (delivered in-conversation) for the
+persona/acceptance test results, backtesting details, and Stage 5
 recommendation.
