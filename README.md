@@ -574,3 +574,29 @@ are different claims worth actually testing.
 
 See the Stage 4.5 completion report (delivered in-conversation) for the
 full results table, ablation findings, and recommendation.
+
+---
+
+# Real rival history (live, post-Stage-4.5)
+
+Once a real gameweek exists, `real_history_cli.py` builds/grows a REAL
+historical captain-decision dataset for one mini league, in the exact CSV
+schema `fpl_rival/calibration/importer.py` already reads - so every
+Stage 4.5 tool (`calibration_cli.py`, baselines, fitting, ablation) works
+on it completely unchanged the moment enough real gameweeks exist.
+
+```bash
+python3 real_history_cli.py --league-id <id>
+```
+
+Safe to re-run every week: it re-fetches whichever gameweeks are finished
+and merges them into the existing file, keyed by (season, manager,
+gameweek), so running it after each deadline grows the dataset one
+gameweek at a time without duplicating rows.
+
+This is NOT the same thing as `importer.py`'s "local file only, never
+auto-downloaded" rule for third-party datasets - `fpl_rival/calibration/live_import.py`
+calls the exact same public FPL endpoints Stage 1 already uses (via Stage
+2's retrieval, reused unmodified), for leagues the user has legitimate
+real-time access to. See `data/real_history/` (gitignored - this is real
+data about real people in your leagues, not something to publish).
