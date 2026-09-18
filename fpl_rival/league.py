@@ -100,11 +100,16 @@ def build_manager_list(data: LeagueData) -> list[dict]:
     """
     by_entry: dict[int, dict] = {}
 
+    # GDPR data minimisation: the standings/new_entries rows also carry each
+    # rival's real name (player_name / player_first_name+player_last_name).
+    # We never read those fields - only their FPL team name (entry_name),
+    # which is what every downstream module (Stage 2 reports, Stage 4/4.5
+    # calibration, exported CSVs) receives as "manager_name".
     for row in data.standings:
         entry_id = row.get("entry")
         by_entry[entry_id] = {
             "entry_id": entry_id,
-            "manager_name": row.get("player_name"),
+            "manager_name": row.get("entry_name"),
             "team_name": row.get("entry_name"),
             "league_position": row.get("rank"),
             "last_rank": row.get("last_rank"),
@@ -117,11 +122,9 @@ def build_manager_list(data: LeagueData) -> list[dict]:
         entry_id = row.get("entry")
         if entry_id in by_entry:
             continue
-        first = row.get("player_first_name") or ""
-        last = row.get("player_last_name") or ""
         by_entry[entry_id] = {
             "entry_id": entry_id,
-            "manager_name": (first + " " + last).strip() or None,
+            "manager_name": row.get("entry_name"),
             "team_name": row.get("entry_name"),
             "league_position": None,
             "last_rank": None,
