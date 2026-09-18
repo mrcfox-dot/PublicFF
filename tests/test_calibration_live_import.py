@@ -42,7 +42,7 @@ class TestConversionMapping(unittest.TestCase):
         xi = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
         squad = _squad(1, xi, (12, 13, 14, 15), captain=1, vice=2, active_chip="wildcard", points=66)
         manager = ManagerData(
-            entry_id=100, manager_name="Chris Fox", league_position=3, total_points=66,
+            entry_id=100, manager_name="Chris Fox", team_name="Fox's Finest", league_position=3, total_points=66,
             gameweek_history=(GameweekHistoryRow(event=1, points=66, total_points=66, rank=893714, event_transfers=1),),
             squads_by_event={1: squad},
         )
@@ -52,10 +52,11 @@ class TestConversionMapping(unittest.TestCase):
         history_row = history_by_event[1]
         record = HistoricalRecord(
             season="2026-27", manager_id=manager.entry_id, gameweek=1, starting_xi=xi, captain=1,
-            manager_name=manager.manager_name, squad=tuple(p.element for p in squad.picks), vice_captain=2,
+            manager_name=manager.team_name, squad=tuple(p.element for p in squad.picks), vice_captain=2,
             transfers=history_row.event_transfers, chip=squad.active_chip, total_points=history_row.total_points,
             gameweek_points=squad.points, rank=history_row.rank,
         )
+        self.assertEqual(record.manager_name, "Fox's Finest")  # team name, never the manager's real name
         self.assertEqual(record.transfers, 1)
         self.assertEqual(record.rank, 893714)
         self.assertEqual(record.chip, "wildcard")

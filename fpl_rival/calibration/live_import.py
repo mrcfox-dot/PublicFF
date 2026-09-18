@@ -13,6 +13,12 @@ The output is written to a growing local CSV, in the exact native schema
 ``importer.import_csv`` already reads - so every existing Stage 4.5 tool
 (baselines, harness, fitting, ablation, calibration) works on real data
 completely unchanged, the moment enough real gameweeks exist.
+
+Privacy: the CSV's ``manager_name`` column is populated from each
+manager's FPL *team* name (e.g. "Fox's Finest"), never their real
+first/last name - real names are never written to this exported/backed-up
+data, even though Stage 2's own in-app reports (for Chris's eyes only,
+never exported) do use them to describe known rivals.
 """
 
 from __future__ import annotations
@@ -98,7 +104,7 @@ def build_real_historical_records(
                     gameweek=event,
                     starting_xi=starting_xi,
                     captain=captain,
-                    manager_name=manager.manager_name,
+                    manager_name=manager.team_name,  # FPL team name, not the manager's real name - see module docstring
                     squad=full_squad or None,
                     vice_captain=squad.vice_captain_element,
                     transfers=(history_row.event_transfers if history_row and history_row.event_transfers is not None else 0),
