@@ -110,3 +110,12 @@ class FPLClient:
             f"/leagues-classic/{league_id}/standings/",
             params={"page_standings": page_standings, "page_new_entries": page_new_entries},
         )
+
+    # -- Fixtures ------------------------------------------------------------------
+
+    def get_fixtures(self, event: Optional[int] = None) -> list:
+        """Fixtures for one gameweek (or the whole season if ``event`` is
+        omitted). Returns [] rather than None for an empty gameweek/season
+        so callers can iterate without a None check."""
+        data = self._get("/fixtures/", params={"event": event} if event is not None else None)
+        return data or []

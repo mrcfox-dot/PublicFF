@@ -18,7 +18,7 @@ import argparse
 import time
 
 from fpl_rival.api import FPLAPIError, FPLClient
-from fpl_rival.live_captain_battle import build_live_captain_battle_inputs
+from fpl_rival.live_captain_battle import build_live_captain_battle_inputs, evaluate_transfer_candidate
 from fpl_rival.simulation.captain_battle import DEFAULT_OBJECTIVE, OBJECTIVES, run_captain_battle
 from fpl_rival.simulation.models import SimulationConfig
 from fpl_rival.simulation.report_text import render_captain_battle_report
@@ -36,13 +36,21 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--extra-candidate", action="append", default=[], metavar="NAME_OR_ID",
         help="Force a specific player from your starting XI into the comparison (by FPL web name or player id). Repeatable.",
     )
+    parser.add_argument(
+        "--compare-transfer-in", action="append", default=[], metavar="NAME_OR_ID",
+        help=(
+            "Compare captaining a player NOT currently in your squad, as if you'd transferred them in "
+            "(swapped for your weakest same-position starter - price/budget/squad legality are not checked, "
+            "that's left to you). By FPL web name or player id. Repeatable."
+        ),
+    )
     return parser.parse_args(argv)
 
 
-def resolve_extra_candidates(values: list, bootstrap: dict) -> tuple:
-    """Resolves each --extra-candidate value to an element id: an integer is
-    used as-is, a name is matched case-insensitively against FPL's web_name.
-    Ambiguous or unknown names are reported and skipped, not guessed."""
+def resolve_player_ids(values: list, bootstrap: dict) -> tuple:
+    """Resolves each value to an element id: an integer is used as-is, a
+    name is matched case-insensitively against FPL's web_name. Ambiguous or
+    unknown names are reported and skipped, not guessed."""
     by_name: dict = {}
     for element in bootstrap.get("elements", []):
         by_name.setdefault(element.get("web_name", "").lower(), []).append(element["id"])
@@ -75,7 +83,8 @@ def main(argv=None) -> int:
         print(f"FATAL: could not retrieve bootstrap-static: {exc}")
         return 1
 
-    extra_candidate_ids = resolve_extra_candidates(args.extra_candidate, bootstrap)
+    extra_candidate_ids = resolve_player_ids(args.extra_candidate, bootstrap)
+    transfer_target_ids = resolve_player_ids(args.compare_transfer_in, bootstrap)
 
     print(f"Collecting live data for league {args.league_id} (this can take a while for large leagues) ...")
     inputs = build_live_captain_battle_inputs(
@@ -108,6 +117,39 @@ def main(argv=None) -> int:
         print(f"Rivals with a real Stage 4 captain prediction (probabilistic mode): {', '.join(names)}")
     else:
         print("No rival had enough history yet for a Stage 4 prediction - every rival used their actual current captain (fixed mode).")
+
+    best_in_squad = result.objective_winner
+    higher_is_better = OBJECTIVES[args.objective]
+    overall_best = (best_in_squad.player_name, best_in_squad.result)
+
+    if transfer_target_ids:
+        print("\n" + "=" * 40)
+        print("TRANSFER-IN COMPARISON (hypothetical - price/budget not checked)")
+        print("=" * 40)
+        for player_id in transfer_target_ids:
+            try:
+                t_result, replaced_id, replaced_name = evaluate_transfer_candidate(inputs, player_id, config, args.objective)
+            except Exception as exc:
+                print(f"\nCould not evaluate player {player_id}: {exc}")
+                continue
+            candidate = t_result.candidates[0]
+            r = candidate.result
+            print(f"\nCaptain {candidate.player_name.upper()} (transferred in for {replaced_name}):")
+            print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
+            print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
+            print(f"  P(move up): {100 * r.prob_move_up:.1f}%")
+            print(f"  Expected position: {r.expected_position:.1f}")
+            metric = getattr(r, args.objective)
+            best_metric = getattr(overall_best[1], args.objective)
+            is_better = metric > best_metric if higher_is_better else metric < best_metric
+            if is_better:
+                overall_best = (candidate.player_name, r)
+
+        print(f"\nBest option overall ({args.objective}): {overall_best[0]}")
+        if overall_best[0] != best_in_squad.player_name:
+            print(f"(Beats your best in-squad option, {best_in_squad.player_name}, on this metric.)")
+        else:
+            print(f"(Your best in-squad option, {best_in_squad.player_name}, still wins - no transfer target compared here beat it.)")
 
     if inputs.errors:
         print(f"\n{len(inputs.errors)} data gap(s)/note(s):")
