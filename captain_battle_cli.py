@@ -128,13 +128,14 @@ def main(argv=None) -> int:
         print("=" * 40)
         for player_id in transfer_target_ids:
             try:
-                t_result, replaced_id, replaced_name = evaluate_transfer_candidate(inputs, player_id, config, args.objective)
+                comparison = evaluate_transfer_candidate(inputs, player_id, config, args.objective)
             except Exception as exc:
                 print(f"\nCould not evaluate player {player_id}: {exc}")
                 continue
-            candidate = t_result.candidates[0]
+            candidate = comparison.result.candidates[0]
             r = candidate.result
-            print(f"\nCaptain {candidate.player_name.upper()} (transferred in for {replaced_name}):")
+            print(f"\nCaptain {candidate.player_name.upper()} (transferred in for {comparison.replaced_player_name}):")
+            print(f"  {comparison.rationale}")
             print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
             print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
             print(f"  P(move up): {100 * r.prob_move_up:.1f}%")

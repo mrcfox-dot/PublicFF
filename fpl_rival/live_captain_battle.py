@@ -292,12 +292,23 @@ def build_live_captain_battle_inputs(
     )
 
 
+POSITION_LABELS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+
+
+@dataclass
+class TransferComparisonResult:
+    result: CaptainBattleResult  # single-candidate: the external player, captained
+    replaced_player_id: int
+    replaced_player_name: str
+    rationale: str  # explains WHY that particular player was chosen to be replaced
+
+
 def evaluate_transfer_candidate(
     inputs: LiveCaptainBattleInputs,
     external_player_id: int,
     config: SimulationConfig,
     objective: str,
-) -> Tuple[CaptainBattleResult, int, str]:
+) -> TransferComparisonResult:
     """Answers "if I transferred X in and captained them, instead of my
     current squad's best option, how would that compare?" - a hypothetical,
     not a transfer recommendation: it does NOT check price, budget, or squad
@@ -306,10 +317,6 @@ def evaluate_transfer_candidate(
     position has the lowest projection (falling back to the lowest
     projection overall if no same-position starter exists), sets them as
     captain, and runs the SAME live league/rivals context through Stage 3.
-
-    Returns ``(result, replaced_player_id, replaced_player_name)`` - a
-    single-candidate CaptainBattleResult, since only one hypothetical squad
-    is being evaluated per call.
     """
     if inputs.chris is None or inputs.ctx is None:
         raise ValueError("inputs must come from a successful build_live_captain_battle_inputs() call.")
@@ -319,10 +326,25 @@ def evaluate_transfer_candidate(
         external_player_id, ctx, inputs.ep_by_element, inputs.team_by_element, inputs.fixture_difficulty_by_team
     )
     external_type = ctx.element_types.get(external_player_id)
+    position_label = POSITION_LABELS.get(external_type, "player")
 
     same_position = [eid for eid in inputs.chris.starting_xi if ctx.element_types.get(eid) == external_type]
     pool = same_position or list(inputs.chris.starting_xi)
-    replaced_id = min(pool, key=lambda eid: inputs.projections.get(eid, projection).projected_mean_points)
+    pool_sorted = sorted(pool, key=lambda eid: inputs.projections.get(eid, projection).projected_mean_points)
+    replaced_id = pool_sorted[0]
+    replaced_name = ctx.player_name(replaced_id)
+
+    if same_position:
+        comparisons = ", ".join(f"{ctx.player_name(eid)} {inputs.projections[eid].projected_mean_points:.1f}" for eid in pool_sorted)
+        rationale = (
+            f"Replaced {replaced_name} - your weakest projected {position_label} this gameweek "
+            f"(fixture-adjusted points, lowest to highest: {comparisons})."
+        )
+    else:
+        rationale = (
+            f"You have no {position_label} in your starting XI, so {replaced_name} - your weakest "
+            f"projected starter overall ({inputs.projections[replaced_id].projected_mean_points:.1f} pts) - was replaced instead."
+        )
 
     new_starting_xi = tuple(external_player_id if eid == replaced_id else eid for eid in inputs.chris.starting_xi)
     hypothetical_chris = ManagerState(
@@ -347,4 +369,4 @@ def evaluate_transfer_candidate(
         hypothetical_chris, hypothetical_league, extended_projections, [external_player_id],
         config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
     )
-    return result, replaced_id, ctx.player_name(replaced_id)
+    return TransferComparisonResult(result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name, rationale=rationale)
