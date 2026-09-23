@@ -127,9 +127,17 @@ def build_live_captain_battle_inputs(
     bootstrap: dict,
     max_managers: int = 50,
     max_candidates: int = 4,
+    extra_candidate_ids: Tuple[int, ...] = (),
     prediction_config: PredictionConfig = PredictionConfig(),
 ) -> LiveCaptainBattleInputs:
-    """Assembles everything ``run_captain_battle`` needs from live FPL data."""
+    """Assembles everything ``run_captain_battle`` needs from live FPL data.
+
+    ``extra_candidate_ids`` lets a caller force specific players into the
+    comparison (e.g. one you're considering that didn't make the top
+    ``max_candidates`` by projected points) - they must already be in your
+    starting XI; Stage 3 never evaluates a transfer-in, only players you
+    currently own (see run_captain_battle's own restriction).
+    """
     league_data, ctx, errors = collect_league_data(
         client, league_id, bootstrap, chris_entry_id=chris_entry_id, max_managers=max_managers, fetch_full_picks_history=True,
     )
@@ -162,8 +170,14 @@ def build_live_captain_battle_inputs(
     chris = manager_states[chris_entry_id]
     league = LeagueState(league_id=league_data.league_id, league_name=league_data.league_name, managers=tuple(manager_states.values()))
 
+    valid_extra_ids = tuple(eid for eid in extra_candidate_ids if eid in chris.starting_xi)
+    for eid in extra_candidate_ids:
+        if eid not in chris.starting_xi:
+            errors.append(f"extra candidate {eid} ({ctx.player_name(eid)}) is not in your starting XI - ignored.")
+
     ranked_xi = sorted(chris.starting_xi, key=lambda eid: -projections[eid].projected_mean_points)
-    candidate_captain_ids = list(dict.fromkeys([chris.captain_id] + ranked_xi[:max_candidates]))[:max_candidates]
+    candidate_captain_ids = list(dict.fromkeys(list(valid_extra_ids) + [chris.captain_id] + ranked_xi[:max_candidates]))
+    candidate_captain_ids.sort(key=lambda eid: -projections[eid].projected_mean_points)
 
     primary_rival_ids = default_primary_rival_ids(chris, league)
     expected_points = {eid: proj.projected_mean_points for eid, proj in projections.items()}

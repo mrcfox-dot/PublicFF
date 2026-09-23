@@ -32,7 +32,36 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--simulations", type=int, default=20_000, help="Monte Carlo simulation count.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (reproducible).")
     parser.add_argument("--objective", default=DEFAULT_OBJECTIVE, choices=sorted(OBJECTIVES), help="Mini-league objective to rank captains by.")
+    parser.add_argument(
+        "--extra-candidate", action="append", default=[], metavar="NAME_OR_ID",
+        help="Force a specific player from your starting XI into the comparison (by FPL web name or player id). Repeatable.",
+    )
     return parser.parse_args(argv)
+
+
+def resolve_extra_candidates(values: list, bootstrap: dict) -> tuple:
+    """Resolves each --extra-candidate value to an element id: an integer is
+    used as-is, a name is matched case-insensitively against FPL's web_name.
+    Ambiguous or unknown names are reported and skipped, not guessed."""
+    by_name: dict = {}
+    for element in bootstrap.get("elements", []):
+        by_name.setdefault(element.get("web_name", "").lower(), []).append(element["id"])
+
+    resolved = []
+    for value in values:
+        try:
+            resolved.append(int(value))
+            continue
+        except ValueError:
+            pass
+        matches = by_name.get(value.strip().lower(), [])
+        if len(matches) == 1:
+            resolved.append(matches[0])
+        elif len(matches) > 1:
+            print(f"'{value}' matches {len(matches)} players (ids {matches}) - use the numeric id instead. Skipped.")
+        else:
+            print(f"'{value}' did not match any player name. Skipped.")
+    return tuple(resolved)
 
 
 def main(argv=None) -> int:
@@ -46,8 +75,12 @@ def main(argv=None) -> int:
         print(f"FATAL: could not retrieve bootstrap-static: {exc}")
         return 1
 
+    extra_candidate_ids = resolve_extra_candidates(args.extra_candidate, bootstrap)
+
     print(f"Collecting live data for league {args.league_id} (this can take a while for large leagues) ...")
-    inputs = build_live_captain_battle_inputs(client, args.league_id, args.entry, bootstrap, max_managers=args.max_managers)
+    inputs = build_live_captain_battle_inputs(
+        client, args.league_id, args.entry, bootstrap, max_managers=args.max_managers, extra_candidate_ids=extra_candidate_ids,
+    )
 
     if inputs.chris is None:
         print("FATAL: could not build a live Captain Battle:")
