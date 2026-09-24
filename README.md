@@ -600,3 +600,34 @@ calls the exact same public FPL endpoints Stage 1 already uses (via Stage
 2's retrieval, reused unmodified), for leagues the user has legitimate
 real-time access to. See `data/real_history/` (gitignored - this is real
 data about real people in your leagues, not something to publish).
+
+---
+
+# Live Captain Battle (Stage 3 + Stage 4, real league data)
+
+`simulation_cli.py` and `prediction_cli.py` are synthetic-only by design
+(no live data existed when they were built). `captain_battle_cli.py` is
+the live entry point: it bridges Stage 2's retrieval into Stage 3's
+simulator, enriching each automatically-identified primary rival with a
+real Stage 4 captain prediction when they have enough history
+(`fpl_rival/live_captain_battle.py`).
+
+```bash
+python3 captain_battle_cli.py --league-id <id>
+python3 captain_battle_cli.py --league-id <id> --extra-candidate Rogers
+python3 captain_battle_cli.py --league-id <id> --compare-transfer-in Saka
+python3 captain_battle_cli.py --league-id <id> --suggest-transfers
+```
+
+`--compare-transfer-in` and `--suggest-transfers` answer "what if I
+transferred X in and captained them" - a hypothetical squad swap
+(replacing your weakest same-position starter), run through the same live
+simulation. Deliberately out of scope, left to the user: price, budget,
+and squad legality (formation, club limits) are never checked.
+
+**This tool never performs a transfer, or any other write action, on a
+user's FPL team.** `fpl_rival/api.py` only calls unauthenticated, public
+FPL endpoints - there is no code path anywhere in this project that could
+write to a real FPL account even by mistake, and it must stay that way:
+every recommendation here is for the user to act on manually in the
+official FPL app, never something this tool does on their behalf.

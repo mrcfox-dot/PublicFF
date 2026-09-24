@@ -18,7 +18,11 @@ import argparse
 import time
 
 from fpl_rival.api import FPLAPIError, FPLClient
-from fpl_rival.live_captain_battle import build_live_captain_battle_inputs, evaluate_transfer_candidate
+from fpl_rival.live_captain_battle import (
+    build_live_captain_battle_inputs,
+    evaluate_transfer_candidate,
+    suggest_top_transfer_candidates,
+)
 from fpl_rival.simulation.captain_battle import DEFAULT_OBJECTIVE, OBJECTIVES, run_captain_battle
 from fpl_rival.simulation.models import SimulationConfig
 from fpl_rival.simulation.report_text import render_captain_battle_report
@@ -44,6 +48,15 @@ def parse_args(argv=None) -> argparse.Namespace:
             "that's left to you). By FPL web name or player id. Repeatable."
         ),
     )
+    parser.add_argument(
+        "--suggest-transfers", action="store_true",
+        help=(
+            "Search every player you don't own for the best transfer-in-and-captain options against your "
+            "rivals (same hypothetical as --compare-transfer-in, price/budget/legality still not checked - "
+            "this never performs a transfer, it only reports what the simulation says)."
+        ),
+    )
+    parser.add_argument("--suggest-transfers-count", type=int, default=3, help="How many suggestions to show.")
     return parser.parse_args(argv)
 
 
@@ -122,6 +135,22 @@ def main(argv=None) -> int:
     higher_is_better = OBJECTIVES[args.objective]
     overall_best = (best_in_squad.player_name, best_in_squad.result)
 
+    def print_transfer_result(label: str, comparison) -> None:
+        candidate = comparison.result.candidates[0]
+        r = candidate.result
+        print(f"\n{label} Captain {candidate.player_name.upper()} (transferred in for {comparison.replaced_player_name}):")
+        print(f"  {comparison.rationale}")
+        print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
+        print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
+        print(f"  P(move up): {100 * r.prob_move_up:.1f}%")
+        print(f"  Expected position: {r.expected_position:.1f}")
+
+    def maybe_update_best(overall_best, player_name, r) -> tuple:
+        metric = getattr(r, args.objective)
+        best_metric = getattr(overall_best[1], args.objective)
+        is_better = metric > best_metric if higher_is_better else metric < best_metric
+        return (player_name, r) if is_better else overall_best
+
     if transfer_target_ids:
         print("\n" + "=" * 40)
         print("TRANSFER-IN COMPARISON (hypothetical - price/budget not checked)")
@@ -132,25 +161,28 @@ def main(argv=None) -> int:
             except Exception as exc:
                 print(f"\nCould not evaluate player {player_id}: {exc}")
                 continue
+            print_transfer_result("NAMED -", comparison)
             candidate = comparison.result.candidates[0]
-            r = candidate.result
-            print(f"\nCaptain {candidate.player_name.upper()} (transferred in for {comparison.replaced_player_name}):")
-            print(f"  {comparison.rationale}")
-            print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
-            print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
-            print(f"  P(move up): {100 * r.prob_move_up:.1f}%")
-            print(f"  Expected position: {r.expected_position:.1f}")
-            metric = getattr(r, args.objective)
-            best_metric = getattr(overall_best[1], args.objective)
-            is_better = metric > best_metric if higher_is_better else metric < best_metric
-            if is_better:
-                overall_best = (candidate.player_name, r)
+            overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
 
+    if args.suggest_transfers:
+        print("\n" + "=" * 40)
+        print(f"TOP {args.suggest_transfers_count} TRANSFER SUGGESTIONS (auto-searched, hypothetical - price/budget not checked)")
+        print("=" * 40)
+        suggestions = suggest_top_transfer_candidates(inputs, config, args.objective, top_n=args.suggest_transfers_count)
+        if not suggestions:
+            print("\nNo eligible transfer candidates could be evaluated.")
+        for rank, comparison in enumerate(suggestions, start=1):
+            print_transfer_result(f"#{rank} -", comparison)
+            candidate = comparison.result.candidates[0]
+            overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
+
+    if transfer_target_ids or args.suggest_transfers:
         print(f"\nBest option overall ({args.objective}): {overall_best[0]}")
         if overall_best[0] != best_in_squad.player_name:
             print(f"(Beats your best in-squad option, {best_in_squad.player_name}, on this metric.)")
         else:
-            print(f"(Your best in-squad option, {best_in_squad.player_name}, still wins - no transfer target compared here beat it.)")
+            print(f"(Your best in-squad option, {best_in_squad.player_name}, still wins - nothing compared here beat it.)")
 
     if inputs.errors:
         print(f"\n{len(inputs.errors)} data gap(s)/note(s):")

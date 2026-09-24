@@ -39,7 +39,7 @@ from fpl_rival.intelligence.models import GameContext, ManagerData
 from fpl_rival.prediction.models import CaptainObservation, LeagueHistory, PredictionConfig
 from fpl_rival.prediction.prediction_engine import predict_captain
 from fpl_rival.prediction.stage3_adapter import apply_prediction_to_manager_state
-from fpl_rival.simulation.captain_battle import CaptainBattleResult, run_captain_battle
+from fpl_rival.simulation.captain_battle import OBJECTIVES, CaptainBattleResult, run_captain_battle
 from fpl_rival.simulation.models import LeagueState, ManagerState, PlayerProjection, SimulationConfig
 from fpl_rival.simulation.relevance_adapter import default_primary_rival_ids
 
@@ -69,6 +69,7 @@ class LiveCaptainBattleInputs:
     ep_by_element: Dict[int, float] = field(default_factory=dict)
     team_by_element: Dict[int, int] = field(default_factory=dict)
     fixture_difficulty_by_team: Dict[int, List[int]] = field(default_factory=dict)
+    status_by_element: Dict[int, str] = field(default_factory=dict)  # FPL 'status': a=available, d=doubtful, i/s/u=unavailable
 
 
 def find_target_gameweek(bootstrap: dict) -> int:
@@ -218,9 +219,11 @@ def build_live_captain_battle_inputs(
 
     ep_by_element: Dict[int, float] = {}
     team_by_element: Dict[int, int] = {}
+    status_by_element: Dict[int, str] = {}
     for element in bootstrap.get("elements", []):
         eid = element["id"]
         team_by_element[eid] = element.get("team")
+        status_by_element[eid] = element.get("status", "a")
         try:
             ep_by_element[eid] = float(element.get("ep_next") or 0)
         except (TypeError, ValueError):
@@ -289,6 +292,7 @@ def build_live_captain_battle_inputs(
         ep_by_element=ep_by_element,
         team_by_element=team_by_element,
         fixture_difficulty_by_team=fixture_difficulty_by_team,
+        status_by_element=status_by_element,
     )
 
 
@@ -370,3 +374,55 @@ def evaluate_transfer_candidate(
         config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
     )
     return TransferComparisonResult(result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name, rationale=rationale)
+
+
+UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}  # injured, suspended, unavailable, not registered (excludes 'a'/'d')
+DEFAULT_SHORTLIST_SIZE = 15
+
+
+def suggest_top_transfer_candidates(
+    inputs: LiveCaptainBattleInputs,
+    config: SimulationConfig,
+    objective: str,
+    top_n: int = 3,
+    shortlist_size: int = DEFAULT_SHORTLIST_SIZE,
+) -> List[TransferComparisonResult]:
+    """Searches every player you don't already own for the ``top_n`` who
+    would most improve your chances against your rivals if captained,
+    exactly as ``evaluate_transfer_candidate`` evaluates one named player -
+    same hypothetical, same caveat: price, budget and squad legality are
+    NOT checked here either, and this never performs a transfer - it only
+    ever reports what a full simulation says, for you to act on or not.
+
+    Full Stage 3 simulations are expensive to run for every eligible
+    player, so this pre-ranks everyone by their (cheap) fixture-adjusted
+    projection first and only fully simulates the top ``shortlist_size`` -
+    a genuinely elite differential could in principle rank outside that
+    shortlist on projection alone but still win a simulation; widen
+    ``shortlist_size`` if you want a more exhaustive (slower) search.
+    """
+    if inputs.chris is None or inputs.ctx is None:
+        raise ValueError("inputs must come from a successful build_live_captain_battle_inputs() call.")
+
+    ctx = inputs.ctx
+    owned_ids = set(inputs.chris.starting_xi) | set(inputs.chris.bench)
+    eligible_ids = [
+        eid for eid in inputs.ep_by_element
+        if eid not in owned_ids and inputs.status_by_element.get(eid, "a") not in UNAVAILABLE_STATUSES
+    ]
+
+    shortlist = sorted(
+        eligible_ids,
+        key=lambda eid: -_project_player(eid, ctx, inputs.ep_by_element, inputs.team_by_element, inputs.fixture_difficulty_by_team).projected_mean_points,
+    )[:shortlist_size]
+
+    higher_is_better = OBJECTIVES[objective]
+    evaluated: List[TransferComparisonResult] = []
+    for player_id in shortlist:
+        try:
+            evaluated.append(evaluate_transfer_candidate(inputs, player_id, config, objective))
+        except Exception as exc:
+            inputs.errors.append(f"player {player_id} ({ctx.player_name(player_id)}): could not be simulated as a transfer candidate ({exc}).")
+
+    evaluated.sort(key=lambda c: getattr(c.result.candidates[0].result, objective), reverse=higher_is_better)
+    return evaluated[:top_n]
