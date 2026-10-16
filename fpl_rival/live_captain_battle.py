@@ -307,6 +307,75 @@ class TransferComparisonResult:
     rationale: str  # explains WHY that particular player was chosen to be replaced
 
 
+def _evaluate_swap_candidate(
+    inputs: LiveCaptainBattleInputs,
+    swap_in_player_id: int,
+    config: SimulationConfig,
+    objective: str,
+    source_label: str,
+) -> TransferComparisonResult:
+    """Shared logic for ``evaluate_transfer_candidate`` and
+    ``evaluate_bench_candidate``: swaps ``swap_in_player_id`` into the
+    starting XI in place of whichever current starter of the same position
+    has the lowest projection (falling back to the lowest projection overall
+    if no same-position starter exists), sets them as captain, and runs the
+    SAME live league/rivals context through Stage 3. ``source_label``
+    distinguishes the two callers in the rationale text only."""
+    if inputs.chris is None or inputs.ctx is None:
+        raise ValueError("inputs must come from a successful build_live_captain_battle_inputs() call.")
+
+    ctx = inputs.ctx
+    projection = _project_player(
+        swap_in_player_id, ctx, inputs.ep_by_element, inputs.team_by_element, inputs.fixture_difficulty_by_team
+    )
+    swap_in_type = ctx.element_types.get(swap_in_player_id)
+    position_label = POSITION_LABELS.get(swap_in_type, "player")
+
+    same_position = [eid for eid in inputs.chris.starting_xi if ctx.element_types.get(eid) == swap_in_type]
+    pool = same_position or list(inputs.chris.starting_xi)
+    pool_sorted = sorted(pool, key=lambda eid: inputs.projections.get(eid, projection).projected_mean_points)
+    replaced_id = pool_sorted[0]
+    replaced_name = ctx.player_name(replaced_id)
+
+    if same_position:
+        comparisons = ", ".join(f"{ctx.player_name(eid)} {inputs.projections[eid].projected_mean_points:.1f}" for eid in pool_sorted)
+        rationale = (
+            f"{source_label}: replaced {replaced_name} - your weakest projected {position_label} this gameweek "
+            f"(fixture-adjusted points, lowest to highest: {comparisons})."
+        )
+    else:
+        rationale = (
+            f"{source_label}: you have no {position_label} in your starting XI, so {replaced_name} - your weakest "
+            f"projected starter overall ({inputs.projections[replaced_id].projected_mean_points:.1f} pts) - was replaced instead."
+        )
+
+    new_starting_xi = tuple(swap_in_player_id if eid == replaced_id else eid for eid in inputs.chris.starting_xi)
+    new_bench = tuple(replaced_id if eid == swap_in_player_id else eid for eid in inputs.chris.bench)
+    hypothetical_chris = ManagerState(
+        entry_id=inputs.chris.entry_id,
+        name=inputs.chris.name,
+        current_total_points=inputs.chris.current_total_points,
+        current_league_position=inputs.chris.current_league_position,
+        starting_xi=new_starting_xi,
+        captain_id=swap_in_player_id,
+        vice_captain_id=inputs.chris.vice_captain_id if inputs.chris.vice_captain_id != replaced_id else None,
+        bench=new_bench,
+    )
+    hypothetical_league = LeagueState(
+        league_id=inputs.league.league_id,
+        league_name=inputs.league.league_name,
+        managers=tuple(hypothetical_chris if m.entry_id == inputs.chris.entry_id else m for m in inputs.league.managers),
+    )
+    extended_projections = dict(inputs.projections)
+    extended_projections[swap_in_player_id] = projection
+
+    result = run_captain_battle(
+        hypothetical_chris, hypothetical_league, extended_projections, [swap_in_player_id],
+        config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
+    )
+    return TransferComparisonResult(result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name, rationale=rationale)
+
+
 def evaluate_transfer_candidate(
     inputs: LiveCaptainBattleInputs,
     external_player_id: int,
@@ -316,64 +385,32 @@ def evaluate_transfer_candidate(
     """Answers "if I transferred X in and captained them, instead of my
     current squad's best option, how would that compare?" - a hypothetical,
     not a transfer recommendation: it does NOT check price, budget, or squad
-    legality (formation, club limits). It swaps ``external_player_id`` into
-    your starting XI in place of whichever current starter of the same
-    position has the lowest projection (falling back to the lowest
-    projection overall if no same-position starter exists), sets them as
-    captain, and runs the SAME live league/rivals context through Stage 3.
+    legality (formation, club limits). See ``_evaluate_swap_candidate`` for
+    the mechanics; this is the "player I don't currently own" entry point -
+    for a player already on your bench, use ``evaluate_bench_candidate``
+    instead (no transfer required for that one).
     """
-    if inputs.chris is None or inputs.ctx is None:
+    return _evaluate_swap_candidate(inputs, external_player_id, config, objective, source_label="Transferred in")
+
+
+def evaluate_bench_candidate(
+    inputs: LiveCaptainBattleInputs,
+    bench_player_id: int,
+    config: SimulationConfig,
+    objective: str,
+) -> TransferComparisonResult:
+    """Answers "what if I started and captained X, who's currently on my
+    bench, instead of my weakest same-position starter?" - a free lineup
+    and captaincy change using a player you already own, no transfer
+    needed. Same hypothetical as ``evaluate_transfer_candidate`` (price/
+    budget/legality questions don't apply here since nothing is bought, but
+    squad/formation legality after the swap still isn't checked).
+    """
+    if inputs.chris is None:
         raise ValueError("inputs must come from a successful build_live_captain_battle_inputs() call.")
-
-    ctx = inputs.ctx
-    projection = _project_player(
-        external_player_id, ctx, inputs.ep_by_element, inputs.team_by_element, inputs.fixture_difficulty_by_team
-    )
-    external_type = ctx.element_types.get(external_player_id)
-    position_label = POSITION_LABELS.get(external_type, "player")
-
-    same_position = [eid for eid in inputs.chris.starting_xi if ctx.element_types.get(eid) == external_type]
-    pool = same_position or list(inputs.chris.starting_xi)
-    pool_sorted = sorted(pool, key=lambda eid: inputs.projections.get(eid, projection).projected_mean_points)
-    replaced_id = pool_sorted[0]
-    replaced_name = ctx.player_name(replaced_id)
-
-    if same_position:
-        comparisons = ", ".join(f"{ctx.player_name(eid)} {inputs.projections[eid].projected_mean_points:.1f}" for eid in pool_sorted)
-        rationale = (
-            f"Replaced {replaced_name} - your weakest projected {position_label} this gameweek "
-            f"(fixture-adjusted points, lowest to highest: {comparisons})."
-        )
-    else:
-        rationale = (
-            f"You have no {position_label} in your starting XI, so {replaced_name} - your weakest "
-            f"projected starter overall ({inputs.projections[replaced_id].projected_mean_points:.1f} pts) - was replaced instead."
-        )
-
-    new_starting_xi = tuple(external_player_id if eid == replaced_id else eid for eid in inputs.chris.starting_xi)
-    hypothetical_chris = ManagerState(
-        entry_id=inputs.chris.entry_id,
-        name=inputs.chris.name,
-        current_total_points=inputs.chris.current_total_points,
-        current_league_position=inputs.chris.current_league_position,
-        starting_xi=new_starting_xi,
-        captain_id=external_player_id,
-        vice_captain_id=inputs.chris.vice_captain_id if inputs.chris.vice_captain_id != replaced_id else None,
-        bench=inputs.chris.bench,
-    )
-    hypothetical_league = LeagueState(
-        league_id=inputs.league.league_id,
-        league_name=inputs.league.league_name,
-        managers=tuple(hypothetical_chris if m.entry_id == inputs.chris.entry_id else m for m in inputs.league.managers),
-    )
-    extended_projections = dict(inputs.projections)
-    extended_projections[external_player_id] = projection
-
-    result = run_captain_battle(
-        hypothetical_chris, hypothetical_league, extended_projections, [external_player_id],
-        config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
-    )
-    return TransferComparisonResult(result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name, rationale=rationale)
+    if bench_player_id not in inputs.chris.bench:
+        raise ValueError(f"player {bench_player_id} is not on your bench - use evaluate_transfer_candidate instead.")
+    return _evaluate_swap_candidate(inputs, bench_player_id, config, objective, source_label="Started from your bench")
 
 
 UNAVAILABLE_STATUSES = {"i", "s", "u", "n"}  # injured, suspended, unavailable, not registered (excludes 'a'/'d')

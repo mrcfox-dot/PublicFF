@@ -20,6 +20,7 @@ import time
 from fpl_rival.api import FPLAPIError, FPLClient
 from fpl_rival.live_captain_battle import (
     build_live_captain_battle_inputs,
+    evaluate_bench_candidate,
     evaluate_transfer_candidate,
     suggest_top_transfer_candidates,
 )
@@ -138,7 +139,7 @@ def main(argv=None) -> int:
     def print_transfer_result(label: str, comparison) -> None:
         candidate = comparison.result.candidates[0]
         r = candidate.result
-        print(f"\n{label} Captain {candidate.player_name.upper()} (transferred in for {comparison.replaced_player_name}):")
+        print(f"\n{label} Captain {candidate.player_name.upper()} (in place of {comparison.replaced_player_name}):")
         print(f"  {comparison.rationale}")
         print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
         print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
@@ -150,6 +151,20 @@ def main(argv=None) -> int:
         best_metric = getattr(overall_best[1], args.objective)
         is_better = metric > best_metric if higher_is_better else metric < best_metric
         return (player_name, r) if is_better else overall_best
+
+    if inputs.chris.bench:
+        print("\n" + "=" * 40)
+        print("FROM YOUR BENCH (no transfer needed - just a lineup/captaincy change)")
+        print("=" * 40)
+        for player_id in inputs.chris.bench:
+            try:
+                comparison = evaluate_bench_candidate(inputs, player_id, config, args.objective)
+            except Exception as exc:
+                print(f"\nCould not evaluate bench player {player_id}: {exc}")
+                continue
+            print_transfer_result("BENCH -", comparison)
+            candidate = comparison.result.candidates[0]
+            overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
 
     if transfer_target_ids:
         print("\n" + "=" * 40)
@@ -177,7 +192,7 @@ def main(argv=None) -> int:
             candidate = comparison.result.candidates[0]
             overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
 
-    if transfer_target_ids or args.suggest_transfers:
+    if transfer_target_ids or args.suggest_transfers or inputs.chris.bench:
         print(f"\nBest option overall ({args.objective}): {overall_best[0]}")
         if overall_best[0] != best_in_squad.player_name:
             print(f"(Beats your best in-squad option, {best_in_squad.player_name}, on this metric.)")

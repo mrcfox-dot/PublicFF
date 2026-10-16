@@ -625,6 +625,11 @@ transferred X in and captained them" - a hypothetical squad swap
 simulation. Deliberately out of scope, left to the user: price, budget,
 and squad legality (formation, club limits) are never checked.
 
+Every one of your bench players is also evaluated automatically on every
+run (no flag needed) under "FROM YOUR BENCH" - "what if I started and
+captained them instead, with no transfer at all" - since a lineup/
+captaincy swap is always available to you for free, unlike a transfer.
+
 **This tool never performs a transfer, or any other write action, on a
 user's FPL team.** `fpl_rival/api.py` only calls unauthenticated, public
 FPL endpoints - there is no code path anywhere in this project that could
