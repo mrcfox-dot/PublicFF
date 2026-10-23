@@ -636,3 +636,25 @@ FPL endpoints - there is no code path anywhere in this project that could
 write to a real FPL account even by mistake, and it must stay that way:
 every recommendation here is for the user to act on manually in the
 official FPL app, never something this tool does on their behalf.
+
+---
+
+# Web dashboard (mini app, single-user)
+
+```bash
+python3 webapp.py
+# open http://127.0.0.1:5000
+```
+
+A browser front end on the same live Captain Battle engine - captain
+options, bench swaps, and top transfer suggestions for all 5 leagues via
+a dropdown, with no CLI flags to remember. `webapp.py` is presentation
+only; it calls the exact same `fpl_rival/live_captain_battle.py` functions
+`captain_battle_cli.py` does; no new analytics live in the web layer.
+
+Deliberately still hardcoded to one entry ID (`CHRIS_ENTRY_ID` in
+`webapp.py`) rather than built out as a multi-user product with its own
+hosting, accounts, and rate-limiting story - that's a separate decision
+with its own tradeoffs (see commit history/discussion), not something
+this mini version tries to solve. Run it locally and open it in your own
+browser; it is not deployed anywhere.

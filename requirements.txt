@@ -3,3 +3,4 @@ requests>=2.31
 # random numbers and reranks the whole league every simulation; vectorising that
 # is what keeps 50,000 simulations under a second. See README "Stage 3" section.
 numpy>=1.26
+flask>=3.0
