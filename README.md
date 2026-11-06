@@ -623,7 +623,12 @@ python3 captain_battle_cli.py --league-id <id> --suggest-transfers
 transferred X in and captained them" - a hypothetical squad swap
 (replacing your weakest same-position starter), run through the same live
 simulation. Deliberately out of scope, left to the user: price, budget,
-and squad legality (formation, club limits) are never checked.
+and formation legality are never checked. One hard squad rule IS checked,
+since it's cheap and unambiguous: max 3 players per real-life club.
+`--suggest-transfers` excludes any candidate that would breach it as a
+standalone transfer; `--compare-transfer-in` still runs the simulation for
+a named player (it's an explicit "what if" question) but prints a WARNING
+if that transfer alone wouldn't be legal.
 
 Every one of your bench players is also evaluated automatically on every
 run (no flag needed) under "FROM YOUR BENCH" - "what if I started and

@@ -45,16 +45,18 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--compare-transfer-in", action="append", default=[], metavar="NAME_OR_ID",
         help=(
             "Compare captaining a player NOT currently in your squad, as if you'd transferred them in "
-            "(swapped for your weakest same-position starter - price/budget/squad legality are not checked, "
-            "that's left to you). By FPL web name or player id. Repeatable."
+            "(swapped for your weakest same-position starter - price/formation legality is not checked, "
+            "that's left to you, but the 3-players-per-club rule IS checked and flagged if breached). "
+            "By FPL web name or player id. Repeatable."
         ),
     )
     parser.add_argument(
         "--suggest-transfers", action="store_true",
         help=(
             "Search every player you don't own for the best transfer-in-and-captain options against your "
-            "rivals (same hypothetical as --compare-transfer-in, price/budget/legality still not checked - "
-            "this never performs a transfer, it only reports what the simulation says)."
+            "rivals (same hypothetical as --compare-transfer-in, price/formation legality still not checked - "
+            "this never performs a transfer, it only reports what the simulation says - but a suggestion that "
+            "would breach the 3-players-per-club rule is excluded automatically)."
         ),
     )
     parser.add_argument("--suggest-transfers-count", type=int, default=3, help="How many suggestions to show.")
@@ -141,6 +143,8 @@ def main(argv=None) -> int:
         r = candidate.result
         print(f"\n{label} Captain {candidate.player_name.upper()} (in place of {comparison.replaced_player_name}):")
         print(f"  {comparison.rationale}")
+        if comparison.club_limit_note:
+            print(f"  WARNING: {comparison.club_limit_note}")
         print(f"  Expected GW points: {r.expected_gameweek_points:.1f}")
         print(f"  P(finish 1st): {100 * r.prob_finish_first:.1f}%")
         print(f"  P(move up): {100 * r.prob_move_up:.1f}%")
@@ -177,8 +181,9 @@ def main(argv=None) -> int:
                 print(f"\nCould not evaluate player {player_id}: {exc}")
                 continue
             print_transfer_result("NAMED -", comparison)
-            candidate = comparison.result.candidates[0]
-            overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
+            if comparison.club_limit_note is None:
+                candidate = comparison.result.candidates[0]
+                overall_best = maybe_update_best(overall_best, candidate.player_name, candidate.result)
 
     if args.suggest_transfers:
         print("\n" + "=" * 40)

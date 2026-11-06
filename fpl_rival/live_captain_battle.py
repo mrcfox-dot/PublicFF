@@ -70,6 +70,7 @@ class LiveCaptainBattleInputs:
     team_by_element: Dict[int, int] = field(default_factory=dict)
     fixture_difficulty_by_team: Dict[int, List[int]] = field(default_factory=dict)
     status_by_element: Dict[int, str] = field(default_factory=dict)  # FPL 'status': a=available, d=doubtful, i/s/u=unavailable
+    team_name_by_id: Dict[int, str] = field(default_factory=dict)
 
 
 def find_target_gameweek(bootstrap: dict) -> int:
@@ -217,6 +218,7 @@ def build_live_captain_battle_inputs(
         errors.append(f"entry {chris_entry_id}: no usable current squad - cannot run a live captain battle.")
         return LiveCaptainBattleInputs(None, None, {}, [], [], [], target_gameweek, errors)
 
+    team_name_by_id: Dict[int, str] = {t["id"]: t.get("short_name", t.get("name", f"Team {t['id']}")) for t in bootstrap.get("teams", [])}
     ep_by_element: Dict[int, float] = {}
     team_by_element: Dict[int, int] = {}
     status_by_element: Dict[int, str] = {}
@@ -293,10 +295,46 @@ def build_live_captain_battle_inputs(
         team_by_element=team_by_element,
         fixture_difficulty_by_team=fixture_difficulty_by_team,
         status_by_element=status_by_element,
+        team_name_by_id=team_name_by_id,
     )
 
 
 POSITION_LABELS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+MAX_PLAYERS_PER_CLUB = 3  # a hard FPL squad rule: never more than 3 players from one real-life club
+
+
+def _club_limit_note(
+    inputs: LiveCaptainBattleInputs, swap_in_player_id: int, replaced_player_id: int
+) -> Optional[str]:
+    """Checks the FPL "max 3 players per club" squad rule for a swap-in.
+    Only genuine external transfers can ever breach it - swapping a player
+    already in your 15 between bench and starting XI never changes the
+    squad's club composition, so this always clears for
+    ``evaluate_bench_candidate``. Returns a human-readable warning if the
+    swap would breach the limit, or None if it's fine."""
+    full_squad = set(inputs.chris.starting_xi) | set(inputs.chris.bench)
+    if swap_in_player_id in full_squad:
+        return None  # already-owned player (bench swap) - squad composition is unchanged
+
+    team_by_element = inputs.team_by_element
+    counts: Dict[int, int] = {}
+    for eid in full_squad:
+        team_id = team_by_element.get(eid)
+        counts[team_id] = counts.get(team_id, 0) + 1
+    replaced_team = team_by_element.get(replaced_player_id)
+    swap_in_team = team_by_element.get(swap_in_player_id)
+    if replaced_team is not None:
+        counts[replaced_team] = counts.get(replaced_team, 0) - 1
+    counts[swap_in_team] = counts.get(swap_in_team, 0) + 1
+
+    new_count = counts.get(swap_in_team, 0)
+    if new_count > MAX_PLAYERS_PER_CLUB:
+        club_name = inputs.team_name_by_id.get(swap_in_team, f"team {swap_in_team}")
+        return (
+            f"Not legal as a standalone transfer: would give you {new_count} {club_name} players "
+            f"(max {MAX_PLAYERS_PER_CLUB}) - you'd need to also transfer out another {club_name} player."
+        )
+    return None
 
 
 @dataclass
@@ -305,6 +343,7 @@ class TransferComparisonResult:
     replaced_player_id: int
     replaced_player_name: str
     rationale: str  # explains WHY that particular player was chosen to be replaced
+    club_limit_note: Optional[str] = None  # set if this transfer alone would breach the 3-per-club rule
 
 
 def _evaluate_swap_candidate(
@@ -373,7 +412,11 @@ def _evaluate_swap_candidate(
         hypothetical_chris, hypothetical_league, extended_projections, [swap_in_player_id],
         config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
     )
-    return TransferComparisonResult(result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name, rationale=rationale)
+    club_limit_note = _club_limit_note(inputs, swap_in_player_id, replaced_id)
+    return TransferComparisonResult(
+        result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name,
+        rationale=rationale, club_limit_note=club_limit_note,
+    )
 
 
 def evaluate_transfer_candidate(
@@ -384,11 +427,17 @@ def evaluate_transfer_candidate(
 ) -> TransferComparisonResult:
     """Answers "if I transferred X in and captained them, instead of my
     current squad's best option, how would that compare?" - a hypothetical,
-    not a transfer recommendation: it does NOT check price, budget, or squad
-    legality (formation, club limits). See ``_evaluate_swap_candidate`` for
-    the mechanics; this is the "player I don't currently own" entry point -
-    for a player already on your bench, use ``evaluate_bench_candidate``
-    instead (no transfer required for that one).
+    not a transfer recommendation: it does NOT check price or formation
+    legality. It DOES check the one hard squad rule that's simple and
+    unambiguous - max 3 players per real-life club - and reports the result
+    via ``TransferComparisonResult.club_limit_note`` (None if fine) rather
+    than refusing to simulate, since a named lookup should still answer the
+    "what if" question even when the result would need an extra transfer
+    to actually be legal. See ``_evaluate_swap_candidate`` for the
+    mechanics; this is the "player I don't currently own" entry point - for
+    a player already on your bench, use ``evaluate_bench_candidate``
+    instead (no transfer required for that one, and the club-limit check
+    always clears since nothing new joins the squad).
     """
     return _evaluate_swap_candidate(inputs, external_player_id, config, objective, source_label="Transferred in")
 
@@ -427,9 +476,14 @@ def suggest_top_transfer_candidates(
     """Searches every player you don't already own for the ``top_n`` who
     would most improve your chances against your rivals if captained,
     exactly as ``evaluate_transfer_candidate`` evaluates one named player -
-    same hypothetical, same caveat: price, budget and squad legality are
-    NOT checked here either, and this never performs a transfer - it only
-    ever reports what a full simulation says, for you to act on or not.
+    same hypothetical, same caveat: price and budget are NOT checked here
+    either, and this never performs a transfer - it only ever reports what
+    a full simulation says, for you to act on or not. Squad legality IS
+    checked for the one hard rule that's cheap to check and genuinely
+    blocks a transfer outright: max 3 players per real-life club. A
+    candidate that would breach it as a standalone transfer is excluded
+    from the results entirely, same as if they weren't eligible at all -
+    formation/price legality are still left to you.
 
     Full Stage 3 simulations are expensive to run for every eligible
     player, so this pre-ranks everyone by their (cheap) fixture-adjusted
@@ -457,9 +511,13 @@ def suggest_top_transfer_candidates(
     evaluated: List[TransferComparisonResult] = []
     for player_id in shortlist:
         try:
-            evaluated.append(evaluate_transfer_candidate(inputs, player_id, config, objective))
+            comparison = evaluate_transfer_candidate(inputs, player_id, config, objective)
         except Exception as exc:
             inputs.errors.append(f"player {player_id} ({ctx.player_name(player_id)}): could not be simulated as a transfer candidate ({exc}).")
+            continue
+        if comparison.club_limit_note is not None:
+            continue  # not a legal standalone transfer - excluded from suggestions, same as an ineligible player
+        evaluated.append(comparison)
 
     evaluated.sort(key=lambda c: getattr(c.result.candidates[0].result, objective), reverse=higher_is_better)
     return evaluated[:top_n]
