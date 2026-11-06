@@ -346,6 +346,16 @@ class TransferComparisonResult:
     club_limit_note: Optional[str] = None  # set if this transfer alone would breach the 3-per-club rule
 
 
+def _projection_for(inputs: LiveCaptainBattleInputs, player_id: int, fallback: PlayerProjection) -> PlayerProjection:
+    """Looks up a cached projection from ``inputs.projections`` (built for
+    every manager's starting XI) or computes one fresh - needed because
+    bench players generally aren't pre-projected, and a real squad-wide
+    comparison (see ``_evaluate_swap_candidate``) has to rank them too."""
+    if player_id in inputs.projections:
+        return inputs.projections[player_id]
+    return _project_player(player_id, inputs.ctx, inputs.ep_by_element, inputs.team_by_element, inputs.fixture_difficulty_by_team)
+
+
 def _evaluate_swap_candidate(
     inputs: LiveCaptainBattleInputs,
     swap_in_player_id: int,
@@ -354,12 +364,22 @@ def _evaluate_swap_candidate(
     source_label: str,
 ) -> TransferComparisonResult:
     """Shared logic for ``evaluate_transfer_candidate`` and
-    ``evaluate_bench_candidate``: swaps ``swap_in_player_id`` into the
-    starting XI in place of whichever current starter of the same position
-    has the lowest projection (falling back to the lowest projection overall
-    if no same-position starter exists), sets them as captain, and runs the
-    SAME live league/rivals context through Stage 3. ``source_label``
-    distinguishes the two callers in the rationale text only."""
+    ``evaluate_bench_candidate``, sets the swap-in player as captain, and
+    runs the SAME live league/rivals context through Stage 3.
+    ``source_label`` distinguishes the two callers in the rationale text.
+
+    For a genuine external transfer, this mirrors how a manager actually
+    executes one: the squad member DROPPED is the weakest projected player
+    at that position across the WHOLE 15 (starting XI and bench both,
+    since only a real transfer can touch the bench) - not just the weakest
+    starter. The new signing then starts in whichever starter's slot it
+    actually displaces (which may be a different, stronger player than the
+    one dropped - e.g. dropping a bench player who's worse than a weak
+    starter, and promoting the signing into the starter's old spot while
+    that starter moves to the bench). An internal bench swap
+    (``evaluate_bench_candidate``) has no "drop" at all - nothing leaves
+    the squad, so it keeps the simpler starter-only comparison.
+    """
     if inputs.chris is None or inputs.ctx is None:
         raise ValueError("inputs must come from a successful build_live_captain_battle_inputs() call.")
 
@@ -369,27 +389,56 @@ def _evaluate_swap_candidate(
     )
     swap_in_type = ctx.element_types.get(swap_in_player_id)
     position_label = POSITION_LABELS.get(swap_in_type, "player")
+    swap_in_name = ctx.player_name(swap_in_player_id)
 
-    same_position = [eid for eid in inputs.chris.starting_xi if ctx.element_types.get(eid) == swap_in_type]
-    pool = same_position or list(inputs.chris.starting_xi)
-    pool_sorted = sorted(pool, key=lambda eid: inputs.projections.get(eid, projection).projected_mean_points)
-    replaced_id = pool_sorted[0]
-    replaced_name = ctx.player_name(replaced_id)
+    full_squad = list(inputs.chris.starting_xi) + list(inputs.chris.bench)
+    is_internal_swap = swap_in_player_id in full_squad
 
-    if same_position:
-        comparisons = ", ".join(f"{ctx.player_name(eid)} {inputs.projections[eid].projected_mean_points:.1f}" for eid in pool_sorted)
+    same_position_starters = [eid for eid in inputs.chris.starting_xi if ctx.element_types.get(eid) == swap_in_type]
+    starter_pool = same_position_starters or list(inputs.chris.starting_xi)
+    starter_pool_sorted = sorted(starter_pool, key=lambda eid: _projection_for(inputs, eid, projection).projected_mean_points)
+    bumped_starter_id = starter_pool_sorted[0]
+    bumped_starter_name = ctx.player_name(bumped_starter_id)
+
+    if not same_position_starters:
+        dropped_id = bumped_starter_id
         rationale = (
-            f"{source_label}: replaced {replaced_name} - your weakest projected {position_label} this gameweek "
+            f"{source_label}: you have no {position_label} in your starting XI, so {bumped_starter_name} - your "
+            f"weakest projected starter overall ({_projection_for(inputs, bumped_starter_id, projection).projected_mean_points:.1f} pts) - was replaced instead."
+        )
+    elif is_internal_swap:
+        dropped_id = bumped_starter_id
+        comparisons = ", ".join(f"{ctx.player_name(eid)} {_projection_for(inputs, eid, projection).projected_mean_points:.1f}" for eid in starter_pool_sorted)
+        rationale = (
+            f"{source_label}: replaced {bumped_starter_name} - your weakest projected {position_label} this gameweek "
             f"(fixture-adjusted points, lowest to highest: {comparisons})."
         )
     else:
-        rationale = (
-            f"{source_label}: you have no {position_label} in your starting XI, so {replaced_name} - your weakest "
-            f"projected starter overall ({inputs.projections[replaced_id].projected_mean_points:.1f} pts) - was replaced instead."
-        )
+        same_position_squad = [eid for eid in full_squad if ctx.element_types.get(eid) == swap_in_type]
+        squad_sorted = sorted(same_position_squad, key=lambda eid: _projection_for(inputs, eid, projection).projected_mean_points)
+        dropped_id = squad_sorted[0]
+        dropped_name = ctx.player_name(dropped_id)
+        comparisons = ", ".join(f"{ctx.player_name(eid)} {_projection_for(inputs, eid, projection).projected_mean_points:.1f}" for eid in squad_sorted)
+        if dropped_id == bumped_starter_id:
+            rationale = (
+                f"{source_label}: replaced {dropped_name} - your weakest projected {position_label} across your "
+                f"whole squad this gameweek (fixture-adjusted points, lowest to highest: {comparisons})."
+            )
+        else:
+            rationale = (
+                f"{source_label}: drops {dropped_name} - your weakest projected {position_label} across your whole "
+                f"squad, including the bench (fixture-adjusted points, lowest to highest: {comparisons}). "
+                f"{swap_in_name} starts in {bumped_starter_name}'s slot; {bumped_starter_name} moves to the bench."
+            )
 
-    new_starting_xi = tuple(swap_in_player_id if eid == replaced_id else eid for eid in inputs.chris.starting_xi)
-    new_bench = tuple(replaced_id if eid == swap_in_player_id else eid for eid in inputs.chris.bench)
+    new_starting_xi = tuple(swap_in_player_id if eid == bumped_starter_id else eid for eid in inputs.chris.starting_xi)
+    if is_internal_swap:
+        new_bench = tuple(bumped_starter_id if eid == swap_in_player_id else eid for eid in inputs.chris.bench)
+    else:
+        # No-op (correctly) when dropped_id == bumped_starter_id, since that's a starter, not a bench
+        # entry: dropped_id can only be a genuine bench player here when it differs from bumped_starter_id.
+        new_bench = tuple(bumped_starter_id if eid == dropped_id else eid for eid in inputs.chris.bench)
+
     hypothetical_chris = ManagerState(
         entry_id=inputs.chris.entry_id,
         name=inputs.chris.name,
@@ -397,7 +446,7 @@ def _evaluate_swap_candidate(
         current_league_position=inputs.chris.current_league_position,
         starting_xi=new_starting_xi,
         captain_id=swap_in_player_id,
-        vice_captain_id=inputs.chris.vice_captain_id if inputs.chris.vice_captain_id != replaced_id else None,
+        vice_captain_id=inputs.chris.vice_captain_id if inputs.chris.vice_captain_id != dropped_id else None,
         bench=new_bench,
     )
     hypothetical_league = LeagueState(
@@ -407,14 +456,15 @@ def _evaluate_swap_candidate(
     )
     extended_projections = dict(inputs.projections)
     extended_projections[swap_in_player_id] = projection
+    extended_projections[bumped_starter_id] = _projection_for(inputs, bumped_starter_id, projection)
 
     result = run_captain_battle(
         hypothetical_chris, hypothetical_league, extended_projections, [swap_in_player_id],
         config=config, objective=objective, primary_rival_entry_ids=inputs.primary_rival_ids,
     )
-    club_limit_note = _club_limit_note(inputs, swap_in_player_id, replaced_id)
+    club_limit_note = _club_limit_note(inputs, swap_in_player_id, dropped_id)
     return TransferComparisonResult(
-        result=result, replaced_player_id=replaced_id, replaced_player_name=replaced_name,
+        result=result, replaced_player_id=dropped_id, replaced_player_name=ctx.player_name(dropped_id),
         rationale=rationale, club_limit_note=club_limit_note,
     )
 
