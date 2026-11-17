@@ -5,6 +5,13 @@ Fantasy Premier League (FPL) data for a manager and one of their classic
 mini leagues. This is Stage 1 only: no website, no auth, no payments, no
 AI/LLM calls, no simulations. Just: can we get the data, and is it enough?
 
+## Development workflow
+
+`main` is the stable branch - nothing is pushed to it directly. Changes
+land via pull request: create a branch, push it, open a PR into `main`,
+and let CI (`.github/workflows/tests.yml`, runs `pytest` on every push
+and PR) confirm the test suite passes before merging.
+
 ## What it does
 
 1. Looks up manager entry `5234355` (default; override with `--entry`).
